@@ -8,7 +8,7 @@ use std::time::Duration;
 use std::{cmp, io};
 
 use http::{HeaderValue, Uri};
-use tokio_native_tls::TlsConnector;
+use tokio_rustls::TlsConnector;
 
 pub(crate) use self::worker::{spawn_workers, ShutdownHandle, WorkerConfig};
 use crate::connection::ReWrkConnector;
@@ -43,9 +43,9 @@ pub enum Error {
     #[error("The provided base URI is missing the required host")]
     /// The base URI is missing the server host.
     MissingHost,
-    #[error("An error occurred while building the TLS config: {0}")]
+    #[error("An error occurred while the TLS config")]
     /// An error occurred while building the TLS config.
-    TlsError(native_tls::Error),
+    TlsError,
     #[error("Failed to resolve the host socket address: {0}")]
     /// The system failed to resolve the socket address.
     AddressLookup(io::Error),
@@ -182,25 +182,35 @@ where
     }
 }
 
+struct NoCertificateVerification {}
+impl tokio_rustls::rustls::client::ServerCertVerifier for NoCertificateVerification {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &tokio_rustls::rustls::Certificate,
+        _intermediates: &[tokio_rustls::rustls::Certificate],
+        _server_name: &tokio_rustls::rustls::ServerName,
+        _scts: &mut dyn Iterator<Item = &[u8]>,
+        _ocsp: &[u8],
+        _now: std::time::SystemTime,
+    ) -> Result<tokio_rustls::rustls::client::ServerCertVerified, tokio_rustls::rustls::Error> {
+        Ok(tokio_rustls::rustls::client::ServerCertVerified::assertion())
+    }
+}
+
 /// Creates a new [ReWrkConnector] using a provided protocol and URI.
 fn create_connector(uri: Uri, protocol: HttpProtocol) -> Result<ReWrkConnector, Error> {
     let scheme = uri.scheme_str().ok_or(Error::MissingScheme)?;
     let scheme = match scheme {
         "http" => Scheme::Http,
         "https" => {
-            let mut builder = native_tls::TlsConnector::builder();
-
-            builder
-                .danger_accept_invalid_certs(true)
-                .danger_accept_invalid_hostnames(true);
-
-            match protocol {
-                HttpProtocol::HTTP1 => builder.request_alpns(&["http/1.1"]),
-                HttpProtocol::HTTP2 => builder.request_alpns(&["h2"]),
-            };
-
-            let cfg = builder.build().map_err(Error::TlsError)?;
-            Scheme::Https(TlsConnector::from(cfg))
+            let root_certs = tokio_rustls::rustls::RootCertStore::empty();
+            let mut cfg = tokio_rustls::rustls::ClientConfig::builder()
+            .with_safe_defaults()
+            .with_root_certificates(root_certs)
+            .with_no_client_auth();
+            let mut dangerous_config = tokio_rustls::rustls::ClientConfig::dangerous(&mut cfg);
+            dangerous_config.set_certificate_verifier(std::sync::Arc::new(NoCertificateVerification {}));
+            Scheme::Https(TlsConnector::from(std::sync::Arc::new(cfg)))
         },
         _ => return Err(Error::InvalidScheme(scheme.to_string())),
     };

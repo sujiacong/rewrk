@@ -112,7 +112,8 @@ impl ReWrkConnector {
         let stream = match self.scheme {
             Scheme::Http => handshake(conn_builder, stream).await?,
             Scheme::Https(ref tls_connector) => {
-                let stream = tls_connector.connect(&self.host, stream).await?;
+                let domain = tokio_rustls::rustls::ServerName::try_from(self.host.as_str())?;
+                let stream = tls_connector.connect(domain, stream).await?;
                 handshake(conn_builder, stream).await?
             },
         };

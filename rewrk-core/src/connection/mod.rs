@@ -1,4 +1,4 @@
-use tokio_native_tls::TlsConnector;
+use tokio_rustls::TlsConnector;
 
 mod conn;
 
